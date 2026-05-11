@@ -5,6 +5,10 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests',
+  // Strict separation from vitest: Playwright owns *.e2e.ts files only.
+  // Vitest owns *.test.ts (unit) and *.spec.tsx (integration). See
+  // docs/testing-strategy.md for the layer-routing rules.
+  testMatch: '**/*.e2e.ts',
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */
@@ -18,7 +22,9 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    baseURL: 'http://localhost:3003',
+    /* Use 127.0.0.1 (not 'localhost') — some CI runners fail Chromium     */
+    /* localhost DNS resolution while Node-level fetches still work.       */
+    baseURL: 'http://127.0.0.1:3003',
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -68,9 +74,11 @@ export default defineConfig({
   /* Run your local dev server before starting the tests */
   webServer: {
     command: 'PLAYWRIGHT_TESTING=true npm run dev',
-    url: 'http://localhost:3003',
+    /* 127.0.0.1 (not 'localhost') — must match baseURL above so the     */
+    /* readiness probe uses the same address tests will navigate to.     */
+    url: 'http://127.0.0.1:3003',
     reuseExistingServer: !process.env['CI'],
-    timeout: 60 * 1000, // 2 minutes timeout
+    timeout: 60 * 1000, // 60 seconds
     ignoreHTTPSErrors: true,
   },
 });

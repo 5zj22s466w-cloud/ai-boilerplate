@@ -1,7 +1,7 @@
-# AGENTS.md – Engineering & AI Standards
+# Engineering & AI Standards
 
 > Canonical config for Claude Code, OpenAI Codex, Cursor, and other AI assistants.
-> Both Claude Code and OpenAI Codex read this file natively. Version: 2026.1
+> Available as both `AGENTS.md` and `CLAUDE.md` (symlinked). Version: 2026.1
 
 ---
 
@@ -45,16 +45,28 @@ npm run db:migrate   # apply to production
 
 **Setup / validation:**
 ```bash
-npm run check        # validate prerequisites
-npm run setup        # full first-time setup
-npm run setup:gh     # GitHub CLI only
+npm run check         # validate prerequisites
+npm run setup         # full first-time setup
+npm run setup:gh      # GitHub CLI only
+npm run setup:protect # apply default-branch protection (admins only)
 npm run scratch:clean
 curl localhost:3003/api/health   # health check
 ```
 
-**CI** (opt-in — see `.github/workflows/ci.yml`):
-- Disabled by default; uncomment the `on:` triggers to activate.
-- Steps: lint → type-check → build → E2E. Confirm GitHub Actions billing before enabling on private repos.
+**Staying in sync with the template:**
+Repos created via `gh repo create --template` have no parent relationship — GitHub's "Sync fork" doesn't apply. To pull updates from this template: run `/sync-template`. The skill reads `.template-source` (pre-filled in this template) to know which upstream to fetch from, sets up a `template` git remote on first run, and merges `--allow-unrelated-histories` into a sync branch for review.
+
+**CI** (`.github/workflows/ci.yml`):
+- Runs on every push to main + every PR.
+- `fast-checks`: lint → type-check → secretlint → npm audit (~2-3 min, always).
+- `e2e-and-build`: Playwright + next build (skipped on draft PRs).
+- Concurrency group cancels superseded runs so minutes don't stack.
+
+**Git hooks** (auto-installed by `husky` on `npm install`):
+- `pre-commit` — blocks commits to `main`/`master`, runs lint-staged + secretlint
+- `pre-push` — blocks force-push to `main`/`master`, scans diff for secrets, runs `npm audit --audit-level=high`
+- `commit-msg` — enforces Conventional Commits + rejects credential-shaped strings
+- Emergency bypass: `SKIP_HUSKY=1 git ...` — use sparingly; no audit trail beyond the stderr warning
 
 ---
 
@@ -97,9 +109,18 @@ These are non-negotiable behaviors. Follow them in every session.
 - Keep PRs small and focused — one feature or fix per PR.
 
 ### Test With Every Change
-- Write or update tests **in the same commit** as the code change. Tests are not optional follow-ups.
-- Run `npm run test` before moving on. Red tests block the next step — fix before continuing.
-- Add `data-testid` to every interactive component. See [E2E Testing](docs/testing-e2e.md).
+Full model in [docs/testing-strategy.md](docs/testing-strategy.md). Rails:
+
+- **Pyramid for server / pure logic** (most unit) — `src/lib/*.test.ts`, `tests/api/*.spec.ts`.
+- **Honeycomb for components** (largest integration) — extract logic to `src/lib/`, then `render()` the component in `*.spec.tsx`.
+- **E2E is a last resort** — only for browser lifecycle, real network roundtrip, multi-page journeys.
+- **Discriminator**: spec calls `render(...)` → integration (`*.spec.tsx`). Otherwise → unit (`*.test.ts`).
+- **Tests ship in the same commit** as the code. Untested code is unfinished.
+- **Mock at boundaries only** (network, DB, time). Heavy mocking inside a unit means the unit is too big — split it.
+- **Name by behavior**, not function: `it('rejects passwords under 8 characters')`.
+- **Coverage is a ratchet** — only goes up via `vitest.config.ts` `thresholds.autoUpdate`.
+
+Commands: `npm run test` (vitest), `npm run test:watch`, `npm run test:coverage`, `npm run test:e2e` (Playwright).
 
 ### Agent Teams
 - Decompose tasks into independent sub-problems and run sub-agents in parallel — don't serialize what can be parallelized.
@@ -124,14 +145,41 @@ These are non-negotiable behaviors. Follow them in every session.
 
 ---
 
+## Security
+
+Built **security-first** — every control runs by default. Full baseline in [docs/security.md](docs/security.md).
+
+- Secrets live in env vars, never code. `.env*` is gitignored; secretlint enforces this on commit, push, and PR.
+- Git history is forever — a deleted-then-committed secret must be **rotated in its source system**.
+- Order: **Fix → Rotate → Update → Verify → Document**. Rotating first leaves a window where the old credential still works.
+- Least privilege on every key: read-only when possible, separate per env + per service, fine-grained PATs.
+- Branch protection: `npm run setup:protect` (admins only).
+
+---
+
+## AI Checkpoints
+
+Imperative rules for AI assistants (Claude, Codex, Cursor). When a rule conflicts with what the user asked, follow the rule and surface the conflict.
+
+- **CHECK-IN before commit** — Show `git diff --cached` and wait for "yes" / "proceed" before `git commit`. Skip only if the user explicitly delegated the session.
+- **SECRETS off-limits** — Never `cat`/`echo`/`grep`/`head` files matching `.env*`, `*.pem`, `*.key`, `*.p12`, `*secret*`, `*token*`, or `*credential*`. Tell the user how to view them in a separate terminal instead.
+- **MAIN GUARD** — Refuse direct commits to `main`/`master`. Always feature branch + draft PR. The pre-commit hook also enforces this.
+- **ROTATION FIRST** — On finding a secret in history, produce a Fix → Rotate → Update → Verify → Document checklist before any code edits. Deleting the literal first creates a credential-still-valid window.
+- **AUDIT POST-INSTALL** — After `npm install` of new deps, run `npm audit` and surface high/critical findings. Don't absorb them silently.
+- **NO CREDENTIAL ECHO** — Never run commands that echo, decode, or display credential values — not even partial.
+
+---
+
 ## Docs
 
 | Doc | What's in it |
 |-----|-------------|
 | [AI Workflow](docs/ai-workflow.md) | Commit discipline, testing, agent teams, retro detail |
 | [Development Standards](docs/development-standards.md) | Project-specific patterns: withErrorHandling, config.ts |
+| [Testing Strategy](docs/testing-strategy.md) | Pyramid + honeycomb model, layer routing, when-to-add-tests matrix |
 | [E2E Testing](docs/testing-e2e.md) | Auth bypass setup, data-testid conventions |
 | [Development Setup](docs/DEVELOPMENT.md) | DB workflow, env vars, Neon branching |
+| [Security](docs/security.md) | Full security baseline + 11-point checklist for new projects |
 
 ---
 

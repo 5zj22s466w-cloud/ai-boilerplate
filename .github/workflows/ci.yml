@@ -1,23 +1,32 @@
-# Optional CI pipeline — enable by uncommenting the `on:` triggers below.
-# GitHub Actions is billed per-minute for private repos; confirm your team's billing before enabling.
-# To disable: delete this file or comment out the `on:` block.
-
 name: CI
 
-# Uncomment to activate:
-# on:
-#   push:
-#     branches: [main]
-#   pull_request:
-#     branches: [main]
+# Minute-frugal CI: fast checks run on every push/PR; heavy checks
+# (Playwright, full build) only on non-draft PRs targeting main.
+# Adjust the heavy-gate condition per your team's billing comfort.
 
-# Placeholder trigger (no-op) so the file is valid YAML when triggers are commented out:
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # Include ready_for_review so the e2e-and-build job kicks off when a PR
+    # transitions from draft to ready (default types omit this event).
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
+# Cancel superseded runs on the same ref to avoid stacking minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  ci:
+  fast-checks:
+    name: Fast checks (lint · type-check · secretlint · audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -35,11 +44,69 @@ jobs:
       - name: Type check
         run: npm run type-check
 
+      - name: Unit + integration tests
+        run: npm run test
+
+      - name: Secret scan
+        run: npx secretlint --maskSecrets "**/*"
+
+      - name: Dependency audit (high+)
+        run: npm audit --audit-level=high
+
+  e2e-and-build:
+    name: Build + Playwright E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Skip on draft PRs; always runs on push to main and on workflow_dispatch.
+    # If you also want to skip on docs-only changes, add a paths-ignore filter
+    # to the workflow's `on:` block above or wire a changed-files action here.
+    if: >
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.draft == false
+    needs: fast-checks
+    # Build-time env: dummy publishable values so prerender doesn't crash.
+    # Real values come from your hosting platform's secret store (Railway,
+    # Vercel, etc.) at runtime — these CI values let `next build` succeed
+    # without exposing any real credentials.
+    env:
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_Y2xlcmsuZXhhbXBsZS5kZXYk
+      CLERK_SECRET_KEY: sk_test_ci_only_never_a_real_secret
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Get Playwright version
+        id: pw
+        run: |
+          PW_VERSION=$(node -p "require('@playwright/test/package.json').version")
+          echo "version=$PW_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install Playwright browsers
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit path)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
       - name: Build
         run: npm run build
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
-
-      - name: E2E tests
-        run: npm run test:e2e
+      - name: E2E tests (chromium only on CI)
+        run: npx playwright test --project=chromium
